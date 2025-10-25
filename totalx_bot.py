@@ -5,18 +5,22 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from openpyxl import Workbook, load_workbook
 from datetime import datetime
 from decimal import Decimal, getcontext
+import shutil
 
 # Precisione decimali
 getcontext().prec = 10
 
-# Carica variabili d'ambiente
+# Carica token
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # File admin
 FILE_ADMIN = "Movimenti_Admin.xlsx"
 
-# Funzione per inizializzare un file Excel
+# Admin bloccati
+IMMUTABLE_ADMINS = ["Ela036", "NyX0369"]
+
+# Inizializza file Excel
 def init_excel(filename, is_admin=False):
     if os.path.exists(filename):
         wb = load_workbook(filename)
@@ -30,12 +34,10 @@ def init_excel(filename, is_admin=False):
             if "Admins" not in wb.sheetnames:
                 ws_admin = wb.create_sheet("Admins")
                 ws_admin.append(["username"])
-                ws_admin.append(["Ela036"])
+                for admin in IMMUTABLE_ADMINS:
+                    ws_admin.append([admin])
         wb.save(filename)
     return wb, wb.active
-
-# Carica il file admin
-wb_admin, ws_admin_mov = init_excel(FILE_ADMIN, is_admin=True)
 
 # Funzioni utilità
 def salva_movimento(user_id: int, username: str, valore: Decimal, filename: str):
@@ -62,6 +64,8 @@ def estratto_conto(filename: str):
     return movimenti, totale
 
 def is_admin(username: str):
+    if username in IMMUTABLE_ADMINS:
+        return True
     wb, ws = init_excel(FILE_ADMIN, is_admin=True)
     if "Admins" not in wb.sheetnames:
         return False
@@ -72,6 +76,8 @@ def is_admin(username: str):
     return False
 
 def add_admin(username: str):
+    if username in IMMUTABLE_ADMINS:
+        return False
     wb, ws = init_excel(FILE_ADMIN, is_admin=True)
     ws_admin = wb["Admins"]
     if not is_admin(username):
@@ -81,6 +87,8 @@ def add_admin(username: str):
     return False
 
 def remove_admin(username: str):
+    if username in IMMUTABLE_ADMINS:
+        return False
     wb, ws = init_excel(FILE_ADMIN, is_admin=True)
     ws_admin = wb["Admins"]
     for idx, row in enumerate(ws_admin.iter_rows(min_row=2, values_only=False), start=2):
@@ -110,9 +118,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/add numero - aggiunge un'entrata\n"
         "/subtract numero - aggiunge un'uscita\n"
         "/total - mostra il saldo totale\n"
-        "/report - mostra l'estratto conto dettagliato\n"
-        "/setadmin username - aggiungi/rimuovi admin (solo admin)\n"
-        "/adminlist - mostra la lista admin (solo admin)"
+        "/report - mostra l'estratto conto completo\n"
+        "/export - ricevi un file Excel con l'estratto conto\n"
+        "/undo - annulla l'ultima operazione\n"
+        "/reset - azzera tutto e crea un nuovo foglio\n"
+        "/setadmin username - aggiunge/rimuove admin (solo admin)\n"
+        "/adminlist - mostra la lista degli admin (solo admin)"
     )
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -159,6 +170,35 @@ async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report_text += f"\nSaldo Totale: {saldo:.2f}"
     await update.message.reply_text(report_text)
 
+async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    username = update.message.from_user.username
+    filename = get_user_file(username)
+    temp_filename = f"export_{username}.xlsx"
+    shutil.copy(filename, temp_filename)
+    with open(temp_filename, "rb") as file:
+        await update.message.reply_document(file, filename=temp_filename)
+    os.remove(temp_filename)
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    username = update.message.from_user.username
+    filename = get_user_file(username)
+    if os.path.exists(filename):
+        os.remove(filename)
+    init_excel(filename, is_admin=is_admin(username))
+    await update.message.reply_text("Foglio azzerato e ricreato con successo!")
+
+async def undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    username = update.message.from_user.username
+    filename = get_user_file(username)
+    wb, ws = init_excel(filename)
+    max_row = ws.max_row
+    if max_row > 1:
+        ws.delete_rows(max_row)
+        wb.save(filename)
+        await update.message.reply_text("Ultima operazione annullata.")
+    else:
+        await update.message.reply_text("Nessuna operazione da annullare.")
+
 async def setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
     if not is_admin(username):
@@ -166,15 +206,20 @@ async def setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         target = context.args[0].replace("@", "")
-        if add_admin(target):
-            await update.message.reply_text(f"Admin {target} aggiunto.")
-        else:
-            if remove_admin(target):
-                await update.message.reply_text(f"Admin {target} rimosso.")
+        if is_admin(target):
+            removed = remove_admin(target)
+            if removed:
+                await update.message.reply_text(f"{target} rimosso dagli admin.")
             else:
-                await update.message.reply_text("Errore nella gestione admin.")
+                await update.message.reply_text(f"{target} non può essere rimosso.")
+        else:
+            added = add_admin(target)
+            if added:
+                await update.message.reply_text(f"{target} aggiunto come admin.")
+            else:
+                await update.message.reply_text(f"{target} è già admin.")
     except IndexError:
-        await update.message.reply_text("Uso: /setadmin username")
+        await update.message.reply_text("Errore! Usa /setadmin username")
 
 async def adminlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
@@ -182,20 +227,22 @@ async def adminlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Solo admin possono vedere la lista admin.")
         return
     admins = list_admins()
-    await update.message.reply_text("Lista Admin:\n" + "\n".join(admins))
+    admins.extend(IMMUTABLE_ADMINS)
+    await update.message.reply_text("Admin attuali:\n" + "\n".join(admins))
 
-# Main
+# Avvio bot
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add))
     app.add_handler(CommandHandler("subtract", subtract))
     app.add_handler(CommandHandler("total", total))
     app.add_handler(CommandHandler("report", report))
+    app.add_handler(CommandHandler("export", export))
+    app.add_handler(CommandHandler("undo", undo))
+    app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("setadmin", setadmin))
     app.add_handler(CommandHandler("adminlist", adminlist))
-
     print("Bot avviato...")
     app.run_polling()
 
