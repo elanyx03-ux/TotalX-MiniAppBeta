@@ -13,8 +13,8 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 # File principale degli admin
 ADMIN_FILE = "estratto_conto_admin.xlsx"
 
-# Lista admin fissi
-FIXED_ADMINS = ["@Ela036", "@NyX0369"]
+# Admin fisso
+FIXED_ADMINS = ["@Elanyx03"]
 # Lista admin modificabile
 admins = FIXED_ADMINS.copy()
 
@@ -22,7 +22,7 @@ admins = FIXED_ADMINS.copy()
 def round_decimal(value):
     return float(Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
-# Funzione per creare o caricare un file Excel
+# Carica o crea file Excel
 def load_or_create_file(filename):
     if os.path.exists(filename):
         wb = load_workbook(filename)
@@ -153,7 +153,6 @@ async def setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if f"@{username}" not in admins:
         await update.message.reply_text("Solo admin possono modificare la lista admin.")
         return
-
     try:
         target = context.args[0]
         if target in FIXED_ADMINS:
@@ -194,4 +193,3 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-    main()
