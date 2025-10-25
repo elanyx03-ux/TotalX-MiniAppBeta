@@ -4,233 +4,214 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from openpyxl import Workbook, load_workbook
 from datetime import datetime
-from decimal import Decimal, getcontext
-import shutil
 
-# Precisione decimali
-getcontext().prec = 10
-
-# Carica token
+# Carica variabili d'ambiente
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# File admin
-FILE_ADMIN = "Movimenti_Admin.xlsx"
+# File principali
+FILE_EXCEL = "Movimenti_Admin.xlsx"
+FILE_MOVIMENTI = "Estratto_Conto_Admin.xlsx"
 
-# Admin bloccati
-IMMUTABLE_ADMINS = ["Ela036", "NyX0369"]
+# Admin principale fisso
+IMMUTABLE_ADMINS = ["Ela036"]
 
-# Inizializza file Excel
-def init_excel(filename, is_admin=False):
-    if os.path.exists(filename):
-        wb = load_workbook(filename)
-        ws = wb.active
-    else:
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Movimenti"
-        ws.append(["user_id", "username", "movimento", "data_ora"])
-        if is_admin:
-            if "Admins" not in wb.sheetnames:
-                ws_admin = wb.create_sheet("Admins")
-                ws_admin.append(["username"])
-                for admin in IMMUTABLE_ADMINS:
-                    ws_admin.append([admin])
-        wb.save(filename)
-    return wb, wb.active
+# Crea o carica il file movimenti admin
+if not os.path.exists(FILE_MOVIMENTI):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Movimenti"
+    ws.append(["username", "movimento", "data_ora"])
+    wb.save(FILE_MOVIMENTI)
+
+# Crea o carica il file admin
+if not os.path.exists(FILE_EXCEL):
+    wb_admin = Workbook()
+    ws_admin = wb_admin.active
+    ws_admin.title = "Admins"
+    ws_admin.append(["username"])
+    wb_admin.save(FILE_EXCEL)
 
 # Funzioni utilità
-def salva_movimento(user_id: int, username: str, valore: Decimal, filename: str):
-    wb, ws = init_excel(filename)
-    data_ora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ws.append([user_id, username, str(valore), data_ora])
-    wb.save(filename)
+def is_admin(username: str):
+    username = username.lower()
+    # Controlla admin principale
+    for admin in IMMUTABLE_ADMINS:
+        if username == admin.lower():
+            return True
+    # Controlla admin aggiunti nel foglio Excel
+    if os.path.exists(FILE_EXCEL):
+        wb_admin = load_workbook(FILE_EXCEL)
+        if "Admins" in wb_admin.sheetnames:
+            ws_admin = wb_admin["Admins"]
+            for row in ws_admin.iter_rows(min_row=2, values_only=True):
+                if row[0] and username == row[0].lower():
+                    return True
+    return False
 
-def leggi_movimenti(filename: str):
-    wb, ws = init_excel(filename)
+def salva_movimento(username: str, valore: float):
+    wb = load_workbook(FILE_MOVIMENTI)
+    ws = wb["Movimenti"]
+    ws.append([username, round(valore,2), datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    wb.save(FILE_MOVIMENTI)
+
+def leggi_movimenti():
     movimenti = []
+    wb = load_workbook(FILE_MOVIMENTI)
+    ws = wb["Movimenti"]
     for row in ws.iter_rows(min_row=2, values_only=True):
-        movimenti.append({
-            "user_id": row[0],
-            "username": row[1],
-            "movimento": Decimal(row[2]),
-            "data_ora": row[3]
-        })
+        if row[0] and row[1] is not None:
+            movimenti.append((row[0], float(row[1]), row[2]))
     return movimenti
 
-def estratto_conto(filename: str):
-    movimenti = leggi_movimenti(filename)
-    totale = sum([m["movimento"] for m in movimenti])
-    return movimenti, totale
+def estratto_conto():
+    movimenti = leggi_movimenti()
+    saldo = sum([m[1] for m in movimenti])
+    return movimenti, saldo
 
-def is_admin(username: str):
-    if username in IMMUTABLE_ADMINS:
-        return True
-    wb, ws = init_excel(FILE_ADMIN, is_admin=True)
-    if "Admins" not in wb.sheetnames:
-        return False
-    ws_admin = wb["Admins"]
-    for row in ws_admin.iter_rows(min_row=2, values_only=True):
-        if row[0] == username:
-            return True
-    return False
-
-def add_admin(username: str):
-    if username in IMMUTABLE_ADMINS:
-        return False
-    wb, ws = init_excel(FILE_ADMIN, is_admin=True)
-    ws_admin = wb["Admins"]
-    if not is_admin(username):
-        ws_admin.append([username])
-        wb.save(FILE_ADMIN)
-        return True
-    return False
-
-def remove_admin(username: str):
-    if username in IMMUTABLE_ADMINS:
-        return False
-    wb, ws = init_excel(FILE_ADMIN, is_admin=True)
-    ws_admin = wb["Admins"]
-    for idx, row in enumerate(ws_admin.iter_rows(min_row=2, values_only=False), start=2):
-        if row[0].value == username:
-            ws_admin.delete_rows(idx)
-            wb.save(FILE_ADMIN)
-            return True
-    return False
-
-def list_admins():
-    wb, ws = init_excel(FILE_ADMIN, is_admin=True)
-    ws_admin = wb["Admins"]
-    admins = [row[0].value for row in ws_admin.iter_rows(min_row=2, values_only=True)]
-    return admins
-
-def get_user_file(username: str):
-    if is_admin(username):
-        return FILE_ADMIN
-    else:
-        return f"Movimenti_{username}.xlsx"
+def crea_file_excel():
+    movimenti, saldo = estratto_conto()
+    wb_user = Workbook()
+    ws_user = wb_user.active
+    ws_user.title = "Estratto Conto"
+    ws_user.append(["Username", "Tipo", "Importo", "Data/Ora"])
+    for m in movimenti:
+        tipo = "Entrata" if m[1] > 0 else "Uscita"
+        ws_user.append([m[0], tipo, m[1], m[2]])
+    ws_user.append([])
+    ws_user.append(["Saldo Totale", saldo])
+    filename = "Estratto_Conto.xlsx"
+    wb_user.save(filename)
+    return filename
 
 # Comandi bot
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Ciao! Sono TotalX Estratto Conto Bot Avanzato.\n"
+        "Ciao! Sono TotalX Pro Bot.\n"
         "Comandi:\n"
-        "/add numero - aggiunge un'entrata\n"
-        "/subtract numero - aggiunge un'uscita\n"
+        "/add numero - aggiunge un'entrata (es. /add 100 o /add 0,05)\n"
+        "/subtract numero - aggiunge un'uscita (es. /subtract 50 o /subtract 0,07)\n"
         "/total - mostra il saldo totale\n"
         "/report - mostra l'estratto conto completo\n"
         "/export - ricevi un file Excel con l'estratto conto\n"
         "/undo - annulla l'ultima operazione\n"
         "/reset - azzera tutto e crea un nuovo foglio\n"
-        "/setadmin username - aggiunge/rimuove admin (solo admin)\n"
-        "/adminlist - mostra la lista degli admin (solo admin)"
+        "/setadmin username - aggiungi/rimuovi un admin (solo admin)\n"
+        "/adminlist - mostra la lista admin (solo admin)"
     )
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        value = Decimal(context.args[0].replace(",", "."))
-        user_id = update.message.from_user.id
+        value = float(context.args[0].replace(",","."))
         username = update.message.from_user.username
-        filename = get_user_file(username)
-        salva_movimento(user_id, username, value, filename)
-        _, saldo = estratto_conto(filename)
-        await update.message.reply_text(f"Entrata registrata: +{value:.2f}\nSaldo attuale: {saldo:.2f}")
+        salva_movimento(username, value)
+        movimenti, saldo = estratto_conto()
+        await update.message.reply_text(f"Entrata registrata: +{round(value,2)}\nSaldo Totale: {round(saldo,2)}")
     except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /add numero, esempio /add 100 o /add 0,05")
+        await update.message.reply_text("Errore! Usa /add numero, es. /add 100 o /add 0,05")
 
 async def subtract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        value = Decimal(context.args[0].replace(",", "."))
-        user_id = update.message.from_user.id
+        value = float(context.args[0].replace(",","."))
         username = update.message.from_user.username
-        filename = get_user_file(username)
-        salva_movimento(user_id, username, -value, filename)
-        _, saldo = estratto_conto(filename)
-        await update.message.reply_text(f"Uscita registrata: -{value:.2f}\nSaldo attuale: {saldo:.2f}")
+        salva_movimento(username, -value)
+        movimenti, saldo = estratto_conto()
+        await update.message.reply_text(f"Uscita registrata: -{round(value,2)}\nSaldo Totale: {round(saldo,2)}")
     except (IndexError, ValueError):
-        await update.message.reply_text("Errore! Usa /subtract numero, esempio /subtract 50 o /subtract 0,07")
+        await update.message.reply_text("Errore! Usa /subtract numero, es. /subtract 50 o /subtract 0,07")
 
 async def total(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = update.message.from_user.username
-    filename = get_user_file(username)
-    _, saldo = estratto_conto(filename)
-    await update.message.reply_text(f"Saldo totale: {saldo:.2f}")
+    movimenti, saldo = estratto_conto()
+    await update.message.reply_text(f"Saldo Totale: {round(saldo,2)}")
 
 async def report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = update.message.from_user.username
-    filename = get_user_file(username)
-    movimenti, saldo = estratto_conto(filename)
+    movimenti, saldo = estratto_conto()
     if not movimenti:
         await update.message.reply_text("Nessun movimento registrato.")
         return
-    report_text = "📄 Estratto Conto\n\n"
+    report_text = "📄 Estratto Conto Completo\n\n"
     for m in movimenti:
-        tipo = "Entrata" if m["movimento"] > 0 else "Uscita"
-        report_text += f"{tipo}: {m['movimento']:.2f} ({m['username']} {m['data_ora']})\n"
-    report_text += f"\nSaldo Totale: {saldo:.2f}"
+        tipo = "Entrata" if m[1] > 0 else "Uscita"
+        report_text += f"{tipo}: {m[1]} ({m[0]} {m[2]})\n"
+    report_text += f"\nSaldo Totale: {round(saldo,2)}"
     await update.message.reply_text(report_text)
 
 async def export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = update.message.from_user.username
-    filename = get_user_file(username)
-    temp_filename = f"export_{username}.xlsx"
-    shutil.copy(filename, temp_filename)
-    with open(temp_filename, "rb") as file:
-        await update.message.reply_document(file, filename=temp_filename)
-    os.remove(temp_filename)
+    filename = crea_file_excel()
+    with open(filename, "rb") as file:
+        await update.message.reply_document(file, filename=filename)
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
-    filename = get_user_file(username)
-    if os.path.exists(filename):
-        os.remove(filename)
-    init_excel(filename, is_admin=is_admin(username))
-    await update.message.reply_text("Foglio azzerato e ricreato con successo!")
+    if not is_admin(username):
+        await update.message.reply_text("❌ Solo admin possono resettare i dati.")
+        return
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Movimenti"
+    ws.append(["username", "movimento", "data_ora"])
+    wb.save(FILE_MOVIMENTI)
+    await update.message.reply_text("🗑️ Tutto azzerato. Nuovo foglio creato.")
 
 async def undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
-    filename = get_user_file(username)
-    wb, ws = init_excel(filename)
-    max_row = ws.max_row
-    if max_row > 1:
-        ws.delete_rows(max_row)
-        wb.save(filename)
-        await update.message.reply_text("Ultima operazione annullata.")
+    if not is_admin(username):
+        await update.message.reply_text("❌ Solo admin possono annullare l'ultima operazione.")
+        return
+    wb = load_workbook(FILE_MOVIMENTI)
+    ws = wb["Movimenti"]
+    if ws.max_row > 1:
+        ws.delete_rows(ws.max_row)
+        wb.save(FILE_MOVIMENTI)
+        await update.message.reply_text("↩️ Ultima operazione annullata.")
     else:
-        await update.message.reply_text("Nessuna operazione da annullare.")
+        await update.message.reply_text("❌ Nessuna operazione da annullare.")
 
 async def setadmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
     if not is_admin(username):
-        await update.message.reply_text("Solo admin possono modificare la lista admin.")
+        await update.message.reply_text("❌ Solo admin possono modificare la lista admin.")
         return
     try:
-        target = context.args[0].replace("@", "")
-        if is_admin(target):
-            removed = remove_admin(target)
-            if removed:
-                await update.message.reply_text(f"{target} rimosso dagli admin.")
-            else:
-                await update.message.reply_text(f"{target} non può essere rimosso.")
-        else:
-            added = add_admin(target)
-            if added:
-                await update.message.reply_text(f"{target} aggiunto come admin.")
-            else:
-                await update.message.reply_text(f"{target} è già admin.")
+        target = context.args[0].replace("@","")
     except IndexError:
         await update.message.reply_text("Errore! Usa /setadmin username")
+        return
+    if target in IMMUTABLE_ADMINS:
+        await update.message.reply_text("❌ Non puoi rimuovere l'admin principale.")
+        return
+    wb_admin = load_workbook(FILE_EXCEL)
+    ws_admin = wb_admin["Admins"]
+    # Verifica se già presente
+    presenti = [row[0] for row in ws_admin.iter_rows(min_row=2, values_only=True)]
+    if target in presenti:
+        # Rimuovi admin
+        for idx, row in enumerate(ws_admin.iter_rows(min_row=2, values_only=False), start=2):
+            if row[0].value == target:
+                ws_admin.delete_rows(idx)
+                wb_admin.save(FILE_EXCEL)
+                await update.message.reply_text(f"❌ Admin {target} rimosso.")
+                return
+    # Aggiungi admin
+    ws_admin.append([target])
+    wb_admin.save(FILE_EXCEL)
+    await update.message.reply_text(f"✅ Admin {target} aggiunto.")
 
 async def adminlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.from_user.username
     if not is_admin(username):
-        await update.message.reply_text("Solo admin possono vedere la lista admin.")
+        await update.message.reply_text("❌ Solo admin possono vedere la lista admin.")
         return
-    admins = list_admins()
-    admins.extend(IMMUTABLE_ADMINS)
-    await update.message.reply_text("Admin attuali:\n" + "\n".join(admins))
+    admin_list = IMMUTABLE_ADMINS.copy()
+    # Aggiunge altri admin dal foglio Excel
+    wb_admin = load_workbook(FILE_EXCEL)
+    ws_admin = wb_admin["Admins"]
+    for row in ws_admin.iter_rows(min_row=2, values_only=True):
+        if row[0] and row[0] not in IMMUTABLE_ADMINS:
+            admin_list.append(row[0])
+    await update.message.reply_text("👑 Lista Admin:\n" + "\n".join(admin_list))
 
-# Avvio bot
+# Main
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -239,8 +220,8 @@ def main():
     app.add_handler(CommandHandler("total", total))
     app.add_handler(CommandHandler("report", report))
     app.add_handler(CommandHandler("export", export))
-    app.add_handler(CommandHandler("undo", undo))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("undo", undo))
     app.add_handler(CommandHandler("setadmin", setadmin))
     app.add_handler(CommandHandler("adminlist", adminlist))
     print("Bot avviato...")
